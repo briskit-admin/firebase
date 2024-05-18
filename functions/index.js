@@ -3,7 +3,14 @@ const admin = require('firebase-admin');
 const moment = require('moment-timezone');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const twilio = require('twilio')
 admin.initializeApp();
+
+const accountSid = 'AC29ff77750cc2c9802474259fa34ea9fa'
+const authToken = '921dd4e8d1c63b779e3ba2fb95c7a1d8'
+const client = new twilio(accountSid, authToken)
+const adminPhoneNumber = '+919884713398'
+const twilioPhoneNumber = '+18482891608'
 
 const razorpay = new Razorpay({
     key_id: functions.config().razorpay.key_id,
@@ -61,85 +68,86 @@ exports.verifyPayment = functions.https.onRequest((request, response) => {
 });
 
 exports.sendRestaurantNotification = functions.firestore
-  .document('orders/{orderId}')
-  .onCreate(async (snap, context) => {
-    const order = snap.data()
-    console.log('Order data:', order)
-
-    // Check if the restaurant reference exists and dereference it
-    try {
-      const restaurantRef = order.restaurant
-      console.log('Restaurant reference:', restaurantRef.path)
-
-      const restaurantDoc = await restaurantRef.get()  // Dereference the document
-
-      if (!restaurantDoc.exists) {
-        console.log('No such restaurant!')
-        return null
-      }
-
-      const restaurantId = restaurantDoc.id  // Get the restaurant ID
-      console.log('Restaurant ID:', restaurantId)
-
-      // Fetch users associated with the restaurant
-      const usersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('restaurants', 'array-contains', restaurantRef)
-        .get()
-
-      if (usersSnapshot.empty) {
-        console.log('No users found for the restaurant.')
-        return null
-      }
-
-      // Collect all the fcmTokens
-      const tokens = []
-      usersSnapshot.forEach(userDoc => {
-        const userData = userDoc.data()
-        console.log('User data:', userData)
-        if (userData.fcmToken) {
-          tokens.push(userData.fcmToken)
-        }
-      })
-
-      if (tokens.length > 0) {
-        const message = {
-          notification: {
-            title: 'New Order Received',
-            body: 'Tap to view the order.',
-          },
-          data: {
-            screen: 'OrderListScreen',  // Ensure this is handled in your navigation structure
-            orderId: context.params.orderId  // Pass orderId to handle specific navigation
-          },
-          tokens,  // Use the array of tokens
-        }
-
-        // Send a multicast message to all tokens registered to the restaurant users
-        const response = await admin.messaging().sendMulticast(message)
-        if (response.successCount > 0) {
-          console.log(`Notification sent successfully to ${response.successCount} devices.`)
-        } else {
-          console.log('Failed to send any messages!')
-        }
-      } else {
-        console.log('No FCM tokens found for the restaurant users.')
-      }
-    } catch (error) {
-      console.error('Error sending notification:', error)
-      return null
-    }
-  })
-
-  exports.sendRunnerNotification = functions.firestore
     .document('orders/{orderId}')
     .onCreate(async (snap, context) => {
         const order = snap.data()
+        console.log('Order data:', order)
 
-        // Check if the runner reference exists and dereference it
-        if (order.runner) {
+        // Check if the restaurant reference exists and dereference it
+        try {
+            const restaurantRef = order.restaurant
+            console.log('Restaurant reference:', restaurantRef.path)
+
+            const restaurantDoc = await restaurantRef.get()  // Dereference the document
+
+            if (!restaurantDoc.exists) {
+                console.log('No such restaurant!')
+                return null
+            }
+
+            const restaurantId = restaurantDoc.id  // Get the restaurant ID
+            console.log('Restaurant ID:', restaurantId)
+
+            // Fetch users associated with the restaurant
+            const usersSnapshot = await admin.firestore()
+                .collection('users')
+                .where('restaurants', 'array-contains', restaurantRef)
+                .get()
+
+            if (usersSnapshot.empty) {
+                console.log('No users found for the restaurant.')
+                return null
+            }
+
+            // Collect all the fcmTokens
+            const tokens = []
+            usersSnapshot.forEach(userDoc => {
+                const userData = userDoc.data()
+                console.log('User data:', userData)
+                if (userData.fcmToken) {
+                    tokens.push(userData.fcmToken)
+                }
+            })
+
+            if (tokens.length > 0) {
+                const message = {
+                    notification: {
+                        title: 'New Order Received',
+                        body: 'Tap to view the order.',
+                    },
+                    data: {
+                        screen: 'OrderListScreen',  // Ensure this is handled in your navigation structure
+                        orderId: context.params.orderId  // Pass orderId to handle specific navigation
+                    },
+                    tokens,  // Use the array of tokens
+                }
+
+                // Send a multicast message to all tokens registered to the restaurant users
+                const response = await admin.messaging().sendMulticast(message)
+                if (response.successCount > 0) {
+                    console.log(`Notification sent successfully to ${response.successCount} devices.`)
+                } else {
+                    console.log('Failed to send any messages!')
+                }
+            } else {
+                console.log('No FCM tokens found for the restaurant users.')
+            }
+        } catch (error) {
+            console.error('Error sending notification:', error)
+            return null
+        }
+    })
+
+exports.sendRunnerNotification = functions.firestore
+    .document('orders/{orderId}')
+    .onUpdate(async (change, context) => {
+        const before = change.before.data()
+        const after = change.after.data()
+
+        // Check if the runner field was added or changed
+        if (!before.runner && after.runner) {
             try {
-                const runnerRef = order.runner
+                const runnerRef = after.runner
                 const runnerDoc = await runnerRef.get()
 
                 if (!runnerDoc.exists) {
@@ -157,16 +165,16 @@ exports.sendRestaurantNotification = functions.firestore
                             body: 'You have been assigned a new order. Tap to view the details.',
                         },
                         data: {
-                            screen: 'OrderDetailsScreen',  // Ensure this is handled in your navigation structure
-                            orderId: context.params.orderId  // Pass orderId to handle specific navigation
+                            screen: 'OrderListScreen',
+                            orderId: context.params.orderId
                         },
-                        token: runnerData.fcmToken,  // Use the FCM token string
+                        token: runnerData.fcmToken,
                     }
 
                     // Send the notification to the runner's device
                     const response = await admin.messaging().send(message)
                     if (response) {
-                        console.log(`Notification sent successfully to the device.`)
+                        console.log('Notification sent successfully to the device.')
                     } else {
                         console.log('Failed to send the message!')
                     }
@@ -178,136 +186,134 @@ exports.sendRestaurantNotification = functions.firestore
                 return null
             }
         } else {
-            console.log('Runner field is not populated in the order document.')
+            console.log('Runner field is not updated or not populated in the order document.')
         }
         return null
     })
 
-exports.assignRunnerOnOrderReady = functions.firestore
+
+exports.assignRunnerOnOrderCreated = functions.firestore
     .document('orders/{orderId}')
-    .onUpdate(async (change, context) => {
-        const before = change.before.data();
-        const after = change.after.data();
-
-        // Proceed only if the order status has changed to 'ready' and no runner is assigned
-        if (after.orderStatus === 'ready' && before.orderStatus !== 'ready' && !after.runner) {
-            const runner = await findLeastBusyRunner();
-            if (runner) {
-                return change.after.ref.update({
-                    runner: runner.ref,
-                    waitingForRunner: admin.firestore.FieldValue.delete()
-                });
-            } else {
-                return change.after.ref.update({ waitingForRunner: true });
-            }
+    .onCreate(async (snapshot, context) => {
+        const order = snapshot.data()
+        const runner = await findSuitableRunner(order.deliveryTime)
+        if (runner) {
+            await snapshot.ref.update({
+                runner: runner.ref,
+                waitingForRunner: admin.firestore.FieldValue.delete()
+            })
+            await runner.ref.update({
+                activeOrders: admin.firestore.FieldValue.increment(1),
+            })
+        } else {
+            await snapshot.ref.update({ waitingForRunner: true })
+            // Send SMS to admin about no available runner
+            await sendSMSToAdmin('No runner available for order ID: ' + order.orderNum)
         }
-        return null;
-    });
+    })
 
-async function findLeastBusyRunner() {
-    const runnersQuerySnapshot = await admin.firestore().collection('runners')
+async function findSuitableRunner(orderDeliveryTime) {
+    const runnersSnapshot = await admin.firestore().collection('runners')
         .where('isActive', '==', true)
-        .orderBy('completedOrders', 'asc') // First order by the least number of completedOrders
-        .orderBy('activeOrders', 'asc') // Then by the least number of activeOrders
-        .limit(1)
-        .get();
-    return runnersQuerySnapshot.empty ? null : runnersQuerySnapshot.docs[0];
+        .get()
+    console.log('deliveryTIme:', orderDeliveryTime)
+    if (runnersSnapshot.empty) return null
+
+    const availableRunners = await Promise.all(runnersSnapshot.docs.map(async (doc) => {
+        const runner = doc.data()
+        const hasConflict = await runnerHasConflictingDelivery(doc.id, orderDeliveryTime)
+        return hasConflict ? null : doc
+    }))
+
+    const filteredRunners = availableRunners.filter(runner => runner !== null)
+
+    if (filteredRunners.length === 0) return null
+
+    // Apply fair distribution logic here
+    filteredRunners.sort((a, b) => {
+        const runnerA = a.data()
+        const runnerB = b.data()
+        if (runnerA.activeOrders !== runnerB.activeOrders) {
+            return runnerA.activeOrders - runnerB.activeOrders
+        } else if (runnerA.completedOrders !== runnerB.completedOrders) {
+            return runnerA.completedOrders - runnerB.completedOrders
+        } else {
+            return Math.random() - 0.5 // Random selection if both metrics are equal
+        }
+    })
+
+    return filteredRunners[0]
 }
 
+async function runnerHasConflictingDelivery(runnerId, newDeliveryTime) {
+    const [newHours, newMinutes] = newDeliveryTime.split(':').map(Number)
+    const assignedOrdersSnapshot = await admin.firestore().collection('orders')
+        .where('runner', '==', admin.firestore().doc(`runners/${runnerId}`))
+        .where('orderStatus', 'in', ['received', 'ready', 'picked'])
+        .get()
 
-async function findActiveRunner() {
-    const runnerQuerySnapshot = await admin.firestore().collection('runners')
-        .where('isActive', '==', true)
-        .limit(1)
-        .get();
-    return runnerQuerySnapshot.empty ? null : runnerQuerySnapshot.docs[0];
+    return assignedOrdersSnapshot.docs.some(doc => {
+        const order = doc.data()
+        const [orderHours, orderMinutes] = order.deliveryTime.split(':').map(Number)
+
+        const newTotalMinutes = newHours * 60 + newMinutes
+        const orderTotalMinutes = orderHours * 60 + orderMinutes
+
+        return Math.abs(newTotalMinutes - orderTotalMinutes) < 60 // Check if within 1 hour
+    })
 }
-
-exports.assignOrdersWhenRunnerActivates = functions.firestore
-    .document('runners/{runnerId}')
-    .onUpdate(async (change, context) => {
-        const before = change.before.data();
-        const after = change.after.data();
-
-        // Proceed only if a runner's isActive status changes to true
-        if (before.isActive !== after.isActive && after.isActive === true) {
-            const orders = await admin.firestore().collection('orders')
-                .where('waitingForRunner', '==', true)
-                .get();
-            if (!orders.empty) {
-                const batch = admin.firestore().batch();
-                let count = 0;
-                orders.docs.forEach(doc => {
-                    if (count < 5) { // Assuming a runner can handle up to 5 orders
-                        batch.update(doc.ref, {
-                            runner: change.after.ref,
-                            waitingForRunner: admin.firestore.FieldValue.delete()
-                        });
-                        count++;
-                    }
-                });
-                await batch.commit();
-                return change.after.ref.update({
-                    activeOrders: admin.firestore.FieldValue.increment(count),
-                    isActive: count === 5 ? false : true
-                });
-            }
-        }
-        return null;
-    });
 
 exports.updateRunnerOnOrderDelivered = functions.firestore
     .document('orders/{orderId}')
     .onUpdate(async (change, context) => {
-        const before = change.before.data();
-        const after = change.after.data();
+        const before = change.before.data()
+        const after = change.after.data()
 
-        // Proceed only if the order status changes to 'delivered'
         if (before.orderStatus !== 'delivered' && after.orderStatus === 'delivered' && after.runner) {
-            const runnerRef = after.runner;
-            const runnerDoc = await runnerRef.get();
-            if (!runnerDoc.exists) {
-                console.log('Runner document does not exist');
-                return null;
-            }
+            const runnerRef = after.runner
+            const runnerDoc = await runnerRef.get()
+            if (!runnerDoc.exists) return null
 
-            const runnerData = runnerDoc.data();
-            const decrement = runnerData.activeOrders > 0 ? 1 : 0;
             await runnerRef.update({
-                activeOrders: admin.firestore.FieldValue.increment(-decrement),
-                isActive: runnerData.activeOrders - decrement < 5
-            });
+                activeOrders: admin.firestore.FieldValue.increment(-1),
+                completedOrders: admin.firestore.FieldValue.increment(1),
+                totalCompletedOrders: admin.firestore.FieldValue.increment(1)
+            })
         }
-        return null;
-    });
+        return null
+    })
 
-// Resets daily completed orders count
-exports.resetDailyCompletedOrders = functions.pubsub.schedule('0 0 * * *')  // Every day at midnight
-    .timeZone('America/New_York')  // Set according to your time zone
-    .onRun((context) => {
-        const resetBatch = admin.firestore().batch();
-        const runnersRef = admin.firestore().collection('runners');
-        return runnersRef.get().then(snapshot => {
-            snapshot.forEach(doc => {
-                resetBatch.update(doc.ref, { completedOrders: 0 });
-            });
-            return resetBatch.commit();
-        });
-    });
+async function sendSMSToAdmin(message) {
+    await client.messages.create({
+        body: message,
+        from: twilioPhoneNumber,
+        to: adminPhoneNumber
+    })
+}
 
-// Resets monthly completed orders count
-exports.resetMonthlyCompletedOrders = functions.pubsub.schedule('0 0 1 * *')  // First of every month at midnight
-    .timeZone('America/New_York')  // Set according to your time zone
-    .onRun((context) => {
-        const resetBatch = admin.firestore().batch();
-        const runnersRef = admin.firestore().collection('runners');
-        return runnersRef.get().then(snapshot => {
-            snapshot.forEach(doc => {
-                resetBatch.update(doc.ref, { totalCompletedOrders: 0 });
-            });
-            return resetBatch.commit();
-        });
-    });
+exports.resetDailyCompletedOrders = functions.pubsub.schedule('0 0 * * *')
+    .timeZone('Asia/Kolkata')
+    .onRun(async (context) => {
+        const runnersRef = admin.firestore().collection('runners')
+        const snapshot = await runnersRef.get()
+        const resetBatch = admin.firestore().batch()
+        snapshot.forEach(doc => {
+            resetBatch.update(doc.ref, { completedOrders: 0 })
+        })
+        await resetBatch.commit()
+    })
+
+exports.resetMonthlyCompletedOrders = functions.pubsub.schedule('0 0 1 * *')
+    .timeZone('Asia/Kolkata')
+    .onRun(async (context) => {
+        const runnersRef = admin.firestore().collection('runners')
+        const snapshot = await runnersRef.get()
+        const resetBatch = admin.firestore().batch()
+        snapshot.forEach(doc => {
+            resetBatch.update(doc.ref, { totalCompletedOrders: 0 })
+        })
+        await resetBatch.commit()
+    })
 
 exports.updateIsActive = functions.firestore
     .document('restaurants/{restaurantId}')

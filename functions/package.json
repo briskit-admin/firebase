@@ -17,7 +17,8 @@
     "firebase-admin": "^11.8.0",
     "firebase-functions": "^4.3.1",
     "moment-timezone": "^0.5.45",
-    "razorpay": "^2.9.2"
+    "razorpay": "^2.9.2",
+    "twilio": "^5.0.4"
   },
   "devDependencies": {
     "firebase-functions-test": "^3.1.0"
