@@ -361,3 +361,42 @@ exports.updateIsActive = functions.firestore
             }
         }
     });
+
+
+exports.cleanUpManualOverrides = functions.pubsub.schedule('every sunday 03:00').timeZone('Asia/Kolkata').onRun(async (context) => {
+  // Get the start of the current day in IST
+  const now = moment.tz('Asia/Kolkata')
+  const todayDate = now.startOf('day').toDate() // Start of the current day (00:00:00)
+
+  const restaurantsRef = admin.firestore().collection('restaurants')
+
+  try {
+    // Fetch all restaurant documents
+    const snapshot = await restaurantsRef.get()
+    const batch = admin.firestore().batch()
+
+    snapshot.forEach(doc => {
+      const restaurantData = doc.data()
+      const manualOverride = restaurantData.manualOverride
+
+      if (manualOverride) {
+        const manualOverrideDate = manualOverride.date.toDate()
+
+        // Check if the manualOverride date is before the start of today
+        if (manualOverrideDate < todayDate) {
+          // If the manualOverride date is before today, prepare to delete it
+          const restaurantDocRef = restaurantsRef.doc(doc.id)
+          batch.update(restaurantDocRef, { manualOverride: admin.firestore.FieldValue.delete() })
+        }
+      }
+    })
+
+    // Commit the batch to delete old manualOverride entries
+    await batch.commit()
+    console.log('Old manualOverride entries deleted successfully.')
+  } catch (error) {
+    console.error('Error cleaning up manualOverride entries:', error)
+  }
+
+  return null
+})
