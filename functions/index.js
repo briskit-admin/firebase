@@ -312,21 +312,21 @@ exports.updateRunnerOnOrderDelivered = functions.firestore
         }
         return null
     })
-    
-    async function sendSMSToAdmin(message) {
-        try {
-            const { twilioClient } = await initializeServices()
-            await twilioClient.messages.create({
-                body: message,
-                from: twilioPhoneNumber,
-                to: adminPhoneNumber
-            })
-            console.log('SMS sent successfully')
-        } catch (error) {
-            console.error('Failed to send SMS', error)
-        }
+
+async function sendSMSToAdmin(message) {
+    try {
+        const { twilioClient } = await initializeServices()
+        await twilioClient.messages.create({
+            body: message,
+            from: twilioPhoneNumber,
+            to: adminPhoneNumber
+        })
+        console.log('SMS sent successfully')
+    } catch (error) {
+        console.error('Failed to send SMS', error)
     }
-    
+}
+
 
 exports.resetDailyCompletedOrders = functions.pubsub.schedule('0 0 * * *')
     .timeZone('Asia/Kolkata')
@@ -351,3 +351,25 @@ exports.resetMonthlyCompletedOrders = functions.pubsub.schedule('0 0 1 * *')
         })
         await resetBatch.commit()
     })
+
+exports.resetAvailability = functions.pubsub.schedule('0 5 * * *').timeZone('Asia/Kolkata').onRun(async (context) => {
+    try {
+        const restaurantsSnapshot = await admin.firestore().collection('restaurants').get()
+
+        const batch = admin.firestore().batch()
+
+        restaurantsSnapshot.forEach(restaurantDoc => {
+            const menuRef = restaurantDoc.ref.collection('menu')
+            menuRef.get().then(menuSnapshot => {
+                menuSnapshot.forEach(itemDoc => {
+                    batch.update(itemDoc.ref, { 'availability.isAvailable': true })
+                })
+            })
+        })
+
+        await batch.commit()
+        console.log('Successfully reset availability for all items.')
+    } catch (error) {
+        console.error('Error resetting availability: ', error)
+    }
+})
