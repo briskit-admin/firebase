@@ -1,71 +1,101 @@
-const functions = require('firebase-functions');
-const admin = require('firebase-admin');
-const moment = require('moment-timezone');
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
-const twilio = require('twilio')
-admin.initializeApp();
+const functions = require('firebase-functions')
+const admin = require('firebase-admin')
+const moment = require('moment-timezone')
+const Razorpay = require('razorpay')
+const crypto = require('crypto')
+const { SecretManagerServiceClient } = require('@google-cloud/secret-manager')
 
-const accountSid = 'AC29ff77750cc2c9802474259fa34ea9fa'
-const authToken = '921dd4e8d1c63b779e3ba2fb95c7a1d8'
-const client = new twilio(accountSid, authToken)
+admin.initializeApp()
+
 const adminPhoneNumber = '+919884713398'
 const twilioPhoneNumber = '+18482891608'
 
-const razorpay = new Razorpay({
-    key_id: functions.config().razorpay.key_id,
-    key_secret: functions.config().razorpay.key_secret
-});
+const secretClient = new SecretManagerServiceClient()
+
+// Function to access secrets from Google Secret Manager
+async function getSecret(name) {
+    try {
+        const [version] = await secretClient.accessSecretVersion({
+            name: `projects/briskit-52b77/secrets/${name}/versions/latest`
+        })
+        return version.payload.data.toString('utf8')
+    } catch (error) {
+        console.error(`Failed to access secret ${name}`, error)
+        throw error
+    }
+}
+
+// Function to initialize services
+async function initializeServices() {
+    const accountSid = await getSecret('TWILIO_ACCOUNT_SID')
+    const authToken = await getSecret('TWILIO_AUTH_TOKEN')
+    const razorpayKeyId = await getSecret('RAZORPAY_KEY_ID')
+    const razorpayKeySecret = await getSecret('RAZORPAY_KEY_SECRET')
+
+    const twilioClient = new (require('twilio'))(accountSid, authToken)
+    const razorpay = new Razorpay({
+        key_id: razorpayKeyId,
+        key_secret: razorpayKeySecret
+    })
+
+    return { twilioClient, razorpay }
+}
 
 exports.createOrder = functions.https.onRequest(async (request, response) => {
-    if (request.method !== 'POST') {
-        return response.status(405).send('Method Not Allowed');
-    }
-
-    if (request.get('content-type') !== 'application/json') {
-        return response.status(400).send('Bad Request: Expected JSON');
-    }
-
     try {
-        // Ensure the amount is provided in the request body and is a number
+        const { razorpay } = await initializeServices()
+
+        if (request.method !== 'POST') {
+            return response.status(405).send('Method Not Allowed')
+        }
+
+        if (request.get('content-type') !== 'application/json') {
+            return response.status(400).send('Bad Request: Expected JSON')
+        }
+
         if (!request.body.amount || typeof request.body.amount !== 'number') {
-            throw new Error('The request must contain an "amount" field with a number value.');
+            throw new Error('The request must contain an "amount" field with a number value.')
         }
 
         // Razorpay expects the amount in the smallest currency unit (e.g., paise for INR)
-        const amountInPaise = request.body.amount * 100;
+        const amountInPaise = request.body.amount * 100
         const options = {
             amount: amountInPaise,
             currency: "INR",
             receipt: `receipt#${Date.now()}`
-        };
-        const order = await razorpay.orders.create(options);
-        response.json(order);
+        }
+        const order = await razorpay.orders.create(options)
+        response.json(order)
     } catch (error) {
-        console.error('Error creating Razorpay order:', error);
-        response.status(500).send(`Error creating order: ${error.message}`);
+        console.error('Error creating Razorpay order:', error)
+        response.status(500).send(`Error creating order: ${error.message}`)
     }
-});
+})
 
-exports.verifyPayment = functions.https.onRequest((request, response) => {
-    const {
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature
-    } = request.body;
+exports.verifyPayment = functions.https.onRequest(async (request, response) => {
+    try {
+        const { razorpayKeySecret } = await initializeServices()
 
-    const secret = functions.config().razorpay.key_secret;
+        const {
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature
+        } = request.body
 
-    const shasum = crypto.createHmac('sha256', secret);
-    shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`);
-    const digest = shasum.digest('hex');
+        const shasum = crypto.createHmac('sha256', razorpayKeySecret)
+        shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`)
+        const digest = shasum.digest('hex')
 
-    if (digest !== razorpay_signature) {
-        response.status(400).send('Payment verification failed');
-        return;
+        if (digest !== razorpay_signature) {
+            response.status(400).send('Payment verification failed')
+            return
+        }
+        response.status(200).send({ success: true })
+    } catch (error) {
+        console.error('Error verifying payment:', error)
+        response.status(500).send(`Error verifying payment: ${error.message}`)
     }
-    response.status(200).send({ success: true });
-});
+})
 
 exports.sendRestaurantNotification = functions.firestore
     .document('orders/{orderId}')
@@ -282,14 +312,21 @@ exports.updateRunnerOnOrderDelivered = functions.firestore
         }
         return null
     })
-
-async function sendSMSToAdmin(message) {
-    await client.messages.create({
-        body: message,
-        from: twilioPhoneNumber,
-        to: adminPhoneNumber
-    })
-}
+    
+    async function sendSMSToAdmin(message) {
+        try {
+            const { twilioClient } = await initializeServices()
+            await twilioClient.messages.create({
+                body: message,
+                from: twilioPhoneNumber,
+                to: adminPhoneNumber
+            })
+            console.log('SMS sent successfully')
+        } catch (error) {
+            console.error('Failed to send SMS', error)
+        }
+    }
+    
 
 exports.resetDailyCompletedOrders = functions.pubsub.schedule('0 0 * * *')
     .timeZone('Asia/Kolkata')
