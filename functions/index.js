@@ -7,7 +7,7 @@ const { SecretManagerServiceClient } = require('@google-cloud/secret-manager')
 
 admin.initializeApp()
 
-const adminPhoneNumber = '+919884713398'
+const adminPhoneNumber = '9884713398'
 const twilioPhoneNumber = '+18482891608'
 
 const secretClient = new SecretManagerServiceClient()
@@ -38,7 +38,22 @@ async function initializeServices() {
         key_secret: razorpayKeySecret
     })
 
-    return { twilioClient, razorpay }
+    return { twilioClient, razorpay, razorpayKeySecret }
+}
+
+async function sendSMS(to, body) {
+    const { twilioClient } = await initializeServices()
+    const formattedTo = `+91${to}`
+    try {
+        await twilioClient.messages.create({
+            body: body,
+            from: twilioPhoneNumber,
+            to: formattedTo
+        })
+        console.log('SMS sent successfully')
+    } catch (error) {
+        console.error('Failed to send SMS', error)
+    }
 }
 
 exports.createOrder = functions.https.onRequest(async (request, response) => {
@@ -74,14 +89,14 @@ exports.createOrder = functions.https.onRequest(async (request, response) => {
 
 exports.verifyPayment = functions.https.onRequest(async (request, response) => {
     try {
-        const { razorpayKeySecret } = await initializeServices()
+        const { razorpay, razorpayKeySecret } = await initializeServices()
 
         const {
             razorpay_order_id,
             razorpay_payment_id,
             razorpay_signature
         } = request.body
-
+        console.log('Razorpay Key Secret:', razorpay)
         const shasum = crypto.createHmac('sha256', razorpayKeySecret)
         shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`)
         const digest = shasum.digest('hex')
@@ -115,8 +130,32 @@ exports.sendRestaurantNotification = functions.firestore
                 return null
             }
 
-            const restaurantId = restaurantDoc.id  // Get the restaurant ID
-            console.log('Restaurant ID:', restaurantId)
+            const restaurantData = restaurantDoc.data()
+            const restaurantName = restaurantData.name || 'Unknown Restaurant'
+            const restaurantBranch = restaurantData.branch || 'Unknown Branch'
+            
+            // Fetch customer details
+            const customerRef = order.customer
+            const customerDoc = await customerRef.get()
+
+            if (!customerDoc.exists) {
+                console.log('No such customer!')
+                return null
+            }
+
+            const customerData = customerDoc.data()
+            const customerName = customerData.name || 'Unknown Customer'
+
+            // Parse and adjust delivery time
+            const deliveryTime = order.deliveryTime
+            const [hours, minutes] = deliveryTime.split(':').map(Number)
+            const deliveryDate = new Date()
+            deliveryDate.setHours(hours)
+            deliveryDate.setMinutes(minutes)
+            deliveryDate.setMinutes(deliveryDate.getMinutes() - 30)
+            const adjustedHours = String(deliveryDate.getHours()).padStart(2, '0')
+            const adjustedMinutes = String(deliveryDate.getMinutes()).padStart(2, '0')
+            const adjustedDeliveryTime = `${adjustedHours}:${adjustedMinutes}`
 
             // Fetch users associated with the restaurant
             const usersSnapshot = await admin.firestore()
@@ -138,18 +177,22 @@ exports.sendRestaurantNotification = functions.firestore
                     tokens.push(userData.fcmToken)
                 }
             })
-
             if (tokens.length > 0) {
                 const message = {
                     notification: {
                         title: 'New Order Received',
-                        body: 'Tap to view the order.',
+                        body: `Customer: ${customerName}\nDeliver by: ${adjustedDeliveryTime}`,
+                    },
+                    android: {
+                        notification: {
+                            icon: "ic_custom_notification",
+                        }
                     },
                     data: {
-                        screen: 'OrderListScreen',  // Ensure this is handled in your navigation structure
-                        orderId: context.params.orderId  // Pass orderId to handle specific navigation
+                        screen: 'OrderListScreen',  
+                        orderId: context.params.orderId 
                     },
-                    tokens,  // Use the array of tokens
+                    tokens,
                 }
 
                 // Send a multicast message to all tokens registered to the restaurant users
@@ -168,7 +211,7 @@ exports.sendRestaurantNotification = functions.firestore
         }
     })
 
-exports.sendRunnerNotification = functions.firestore
+    exports.sendRunnerNotification = functions.firestore
     .document('orders/{orderId}')
     .onUpdate(async (change, context) => {
         const before = change.before.data()
@@ -187,15 +230,44 @@ exports.sendRunnerNotification = functions.firestore
 
                 const runnerData = runnerDoc.data()
 
+                // Fetch restaurant details
+                const restaurantRef = after.restaurant
+                const restaurantDoc = await restaurantRef.get()
+
+                if (!restaurantDoc.exists) {
+                    console.log('No such restaurant!')
+                    return null
+                }
+
+                const restaurantData = restaurantDoc.data()
+                const restaurantName = restaurantData.name || ''
+                const restaurantBranch = restaurantData.branch || ''
+
+                // Parse and adjust delivery time
+                const deliveryTime = after.deliveryTime
+                const [hours, minutes] = deliveryTime.split(':').map(Number)
+                const deliveryDate = new Date()
+                deliveryDate.setHours(hours)
+                deliveryDate.setMinutes(minutes)
+                deliveryDate.setMinutes(deliveryDate.getMinutes() - 15)
+                const adjustedHours = String(deliveryDate.getHours()).padStart(2, '0')
+                const adjustedMinutes = String(deliveryDate.getMinutes()).padStart(2, '0')
+                const adjustedDeliveryTime = `${adjustedHours}:${adjustedMinutes}`
+
                 // Check if there is an FCM token to send the notification to
                 if (runnerData.fcmToken) {
                     const message = {
                         notification: {
                             title: 'New Order Assigned',
-                            body: 'You have been assigned a new order. Tap to view the details.',
+                            body: `Restaurant: ${restaurantName}${restaurantBranch ? `, ${restaurantBranch}` : ''}\nDeliver before: ${adjustedDeliveryTime}`,
+                        },
+                        android: {
+                            notification: {
+                                icon: "ic_custom_notification",
+                            }
                         },
                         data: {
-                            screen: 'OrderListScreen',
+                            screen: 'OrderDetailScreen',
                             orderId: context.params.orderId
                         },
                         token: runnerData.fcmToken,
@@ -220,25 +292,45 @@ exports.sendRunnerNotification = functions.firestore
         }
         return null
     })
-
-
 exports.assignRunnerOnOrderCreated = functions.firestore
     .document('orders/{orderId}')
     .onCreate(async (snapshot, context) => {
         const order = snapshot.data()
-        const runner = await findSuitableRunner(order.deliveryTime)
-        if (runner) {
-            await snapshot.ref.update({
-                runner: runner.ref,
+        if (!order.runner) {
+            const runner = await findSuitableRunner(order.deliveryTime)
+            if (runner) {
+                await snapshot.ref.update({
+                    runner: runner.ref,
+                    waitingForRunner: admin.firestore.FieldValue.delete()
+                })
+                await runner.ref.update({
+                    activeOrders: admin.firestore.FieldValue.increment(1),
+                    orders: admin.firestore.FieldValue.arrayUnion(snapshot.ref)
+                })
+            } else {
+                await snapshot.ref.update({ waitingForRunner: true })
+                // Send SMS to admin about no available runner
+                await sendSMS(adminPhoneNumber, 'No runner available for order#' + order.orderNum)
+            }
+        }
+    })
+
+exports.onRunnerAssignedToOrder = functions.firestore
+    .document('orders/{orderId}')
+    .onUpdate(async (change, context) => {
+        const before = change.before.data()
+        const after = change.after.data()
+
+        if (!before.runner && after.runner) {
+            // Runner has been assigned
+            const runnerRef = after.runner
+            await runnerRef.update({
+                activeOrders: admin.firestore.FieldValue.increment(1),
+                orders: admin.firestore.FieldValue.arrayUnion(change.after.ref)
+            })
+            await change.after.ref.update({
                 waitingForRunner: admin.firestore.FieldValue.delete()
             })
-            await runner.ref.update({
-                activeOrders: admin.firestore.FieldValue.increment(1),
-            })
-        } else {
-            await snapshot.ref.update({ waitingForRunner: true })
-            // Send SMS to admin about no available runner
-            await sendSMSToAdmin('No runner available for order ID: ' + order.orderNum)
         }
     })
 
@@ -313,20 +405,6 @@ exports.updateRunnerOnOrderDelivered = functions.firestore
         return null
     })
 
-async function sendSMSToAdmin(message) {
-    try {
-        const { twilioClient } = await initializeServices()
-        await twilioClient.messages.create({
-            body: message,
-            from: twilioPhoneNumber,
-            to: adminPhoneNumber
-        })
-        console.log('SMS sent successfully')
-    } catch (error) {
-        console.error('Failed to send SMS', error)
-    }
-}
-
 
 exports.resetDailyCompletedOrders = functions.pubsub.schedule('0 0 * * *')
     .timeZone('Asia/Kolkata')
@@ -371,5 +449,67 @@ exports.resetAvailability = functions.pubsub.schedule('0 5 * * *').timeZone('Asi
         console.log('Successfully reset availability for all items.')
     } catch (error) {
         console.error('Error resetting availability: ', error)
+    }
+})
+
+// Firestore trigger for order creation
+exports.sendOrderCreationSMS = functions.firestore
+.document('orders/{orderId}')
+.onCreate(async (snap, context) => {
+    const order = snap.data()
+    const customerRef = order.customer
+
+    try {
+        const customerDoc = await customerRef.get()
+        if (customerDoc.exists) {
+            const customerData = customerDoc.data()
+            const customerMobile = customerData.mobile
+            const message = `Your BriskIT order with order#${order.orderNum} and Pickup Code: ${order.pickupCode} has been received`
+            await sendSMS(customerMobile, message)
+        } else {
+            console.log('Customer document does not exist.')
+        }
+    } catch (error) {
+        console.error('Error fetching customer document:', error)
+    }
+})
+
+// Firestore trigger for order status updates
+exports.sendOrderStatusUpdateSMS = functions.firestore
+.document('orders/{orderId}')
+.onUpdate(async (change, context) => {
+    const before = change.before.data()
+    const after = change.after.data()
+    const customerRef = after.customer
+
+    let message = ''
+
+    if (before.orderStatus !== after.orderStatus) {
+        try {
+            const customerDoc = await customerRef.get()
+            if (customerDoc.exists) {
+                const customerData = customerDoc.data()
+                const customerMobile = customerData.mobile
+
+                switch (after.orderStatus) {
+                    case 'delivered':
+                        message = `Your BriskIT order with order#${after.orderNum} has been delivered. Please visit the pickup point and collect your order`
+                        break
+                    case 'completed':
+                        message = `Your BriskIT order with order#${after.orderNum} has been picked up`
+                        break
+                    case 'cancelled':
+                        message = `Your BriskIT order with order#${after.orderNum} has been cancelled`
+                        break
+                }
+                if (message) {
+                    await sendSMS(customerMobile, message)
+                }
+            } else {
+                console.log('Customer document does not exist.')
+            }
+        } catch (error) {
+            console.error('Error fetching customer document:', error)
+        }
     }
 })
